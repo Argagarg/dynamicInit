@@ -7,8 +7,25 @@ var Tracker = Tracker || {
 		    "broken-shield", "flying-flag", "radioactive", "trophy", "broken-skull", "frozen-orb", "rolling-bomb",
 		    "white-tower", "grab", "screaming", "grenade", "sentry-gun", "all-for-one", "angel-outfit", "archery-target"],
 
-    STATUS_ALIASES: {'deflection': "bolt-shield", 'disabled': "pummeled", 'haste': "lightning-helix", 'invisible': "ninja-mask",
-		    'potion': "drink-me", 'stun': "sleepy"},
+    STATUS_ALIASES: {'crippled': "arrowed", 'helpless': "cobweb", 'pinned': "flying-flag", 'prone': "back-pain",
+			'frenzied': "strong", 'stunned': "pummeled", 'unaware': "half-haze", 'hidden':"ninja-mask",
+			'aiming':"archery-target", 'braced':"sentry gun", 'defensive':"white-tower", 'guarded':"bolt-shield",
+			'overwatch':"all-for-one",'inspired':"trophy", 'hallucinating':"aura", 'haywire':"spanner", 'bloodloss':"half-haze",
+			'blinded':"bleeding-eye", 'deafened':"lightning-helix", 'fire':"three-leaves", 'engaged':"fist", 'grabbed':"grab",
+			'feared':"screaming", 'unconscious':"sleepy", 'uselesslimb':"broken-skull", 'criticallywounded':"broken-heart",
+			'heavilywounded':"half-heart", 'lightlywounded':"chained-heart"},
+
+	INITIATIVE_MOD: {'unconscious':-100, 
+			'helpless':-20, 'stunned':-20, 
+			'feared':-15, 'pinned':-15, 'fire':-15, 
+			'grabbed':-10,
+			'arrowed':-5, 'prone':-5, 'blinded':-5, 'deafened':-5,
+			'aiming':5,
+			'guarded':10,
+			'defensive':20,
+	},
+
+
 
     CONFIG_PARAMS: [['announceRounds',		"Announce Each Round"],
 		    ['announceTurns',		"Announce Each Player's Turn"],
@@ -63,7 +80,6 @@ var Tracker = Tracker || {
 	sendChat("", "/desc Start of Turn " + state.InitiativeTracker.round + " for " + tokenName + " (" + count + ")");
     },
 
-	//lol
     announceStatusExpiration: function(status, tokenName){
 	if (!state.InitiativeTracker.announceExpiration){ return; }
 	sendChat("", "/desc Status " + status + " expired on " + tokenName);
@@ -73,6 +89,8 @@ var Tracker = Tracker || {
 	var newTurns = JSON.parse((typeof(newTurnOrder) == typeof("") ? newTurnOrder : newTurnOrder.get('turnorder') || "[]"));
 	var oldTurns = JSON.parse((typeof(oldTurnOrder) == typeof("") ? oldTurnOrder : oldTurnOrder.turnorder || "[]"));
 
+	log(newTurns);
+	log(oldTurns);
 	if ((!newTurns) || (!oldTurns)){ return; }
 
 	if ((newTurns.length == 0) && (oldTurns.length > 0)){ return Tracker.reset(); } // turn order was cleared; reset
@@ -121,6 +139,122 @@ var Tracker = Tracker || {
 		Tracker.announceRound(state.InitiativeTracker.round);
 		
 		//Dynamic Init hook: find all the tokens on the map and reroll their initiative
+		var charid;
+		var tokenid;
+		var matchingCharacters;
+		var initBonus;
+		var roll;
+		var usedCharArray = [];
+		var turnorder=[];
+		var oldstack=[];
+		var newEntry={};
+		var tokenStatuses={};
+		var initModArray={};
+		var initDupeArray={};
+		var rollArray={};
+		var duplicateInit=false;
+		var page_id;
+		var exists;
+		var currentPageGraphics = findObjs({                              
+			_pageid: Campaign().get("playerpageid"),                              
+			_type: "graphic",    
+			_subtype: "token",              
+		});
+		if(currentPageGraphics.length != 0){page_id=currentPageGraphics[0].get('pageid');}
+
+		//Set up the Round Start entry
+		turnorder.push({
+			id: "-1",
+			pr: 100,
+			custom: "Round Start",
+			_pageid: page_id
+		});
+
+		//calculate the initiative modifiers for each token
+		for(var i = 0; i <state.InitiativeTracker.status.length; i++){
+			var curStatus=state.InitiativeTracker.status[i];
+			//TODO: This inversion is messing something up with the turn name announcer; it could be fucking other shit up
+			var temp = (_.invert(Tracker.STATUS_ALIASES))[curStatus.status];
+			if(!Tracker.INITIATIVE_MOD[temp]){continue;}
+			tokenStatuses[curStatus.token]=temp;
+			if(!initModArray[curStatus.token]){
+				initModArray[curStatus.token]=parseInt(Tracker.INITIATIVE_MOD[temp]);
+			}else{
+				initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[temp]);
+			}
+		}
+		
+		_.each(currentPageGraphics, function(graphic) {
+			tokenid=graphic.get('id');   
+			//only check tokens which have bar values (are character tokens of some kind)
+			if(graphic.get('bar3_value')!=''){
+				exists=false;
+				//check to see if the token is linked to a character
+				charid=graphic.get('represents');
+				if(charid != undefined && charid != ''){
+					initBonus=getAttrByName(charid,"AgilityMod","current");
+					roll=randomInteger(10)+parseInt(initBonus);
+				}else{
+					//if there's no linked char, see if we can find any characters with the exact same name as the token
+					characterName = graphic.get('name');
+					matchingCharacters = findObjs({                                                            
+						_type: "character",    
+						name: characterName,              
+					});
+					if(matchingCharacters.length == 0){
+						//no matching characters, so we do something generic
+						roll=randomInteger(10);
+						initBonus=0;
+					} else{
+						//we take the first character match and, if we haven't already, pull attributes from it
+						charid=matchingCharacters[0].get('id');
+						_.each(usedCharArray, function(used) {
+							if(used===charid){exists=true;}
+						}); 
+						if(exists==false){
+							initBonus=getAttrByName(charid,"AgilityMod","current");
+							roll=randomInteger(10)+parseInt(initBonus);
+							usedCharArray.push(charid);
+							initDupeArray[charid]=initModArray[tokenid];
+						}else{
+							initBonus=getAttrByName(charid,"AgilityMod","current");
+							if(initModArray[tokenid]==initDupeArray[charid]){duplicateInit=true;}
+							else{duplicateInit=false;}
+						}
+					}
+				}
+				//push onto turnorder array
+				if(exists==false){
+					if(initModArray[tokenid]){
+						roll=roll+parseInt(initModArray[tokenid]);
+						rollArray[charid]=roll;
+					}
+					newEntry={id: tokenid, pr: roll, custom: initBonus, _pageid: page_id};
+					while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
+					if(newEntry.pr === turnorder[turnorder.length-1].pr){
+						if(newEntry.custom > turnorder[turnorder.length-1].custom){oldstack.push(turnorder.pop());}
+						else{turnorder.push(newEntry);}
+					}
+					if(newEntry.pr < turnorder[turnorder.length-1].pr){turnorder.push(newEntry);}
+					while(oldstack.length >0){turnorder.push(oldstack.pop());}
+				} else if (exists==true && duplicateInit==false){
+					//check for statuses and apply their initiative modifiers
+					if(initModArray[tokenid]){
+						roll=rollArray[charid]+parseInt(initModArray[tokenid]);
+					}
+					newEntry={id: tokenid, pr: roll, custom: "", _pageid: page_id};
+					while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
+					if(newEntry.pr === turnorder[turnorder.length-1].pr){
+						if(newEntry.custom > turnorder[turnorder.length-1].custom){oldstack.push(turnorder.pop());}
+						else{turnorder.push(newEntry);}
+					}
+					if(newEntry.pr < turnorder[turnorder.length-1].pr){turnorder.push(newEntry);}
+					while(oldstack.length >0){turnorder.push(oldstack.pop());}
+				}
+			}
+		});
+		//Push turnorder to roll20
+		Campaign().set("turnorder", JSON.stringify(turnorder));
 	}
 
 
@@ -397,8 +531,9 @@ var Tracker = Tracker || {
 		if (selected[i]._type != "graphic"){ continue; }
 		var token = getObj(selected[i]._type, selected[i]._id);
 		if (!token){ continue; }
-		Tracker.addStatus(selected[i]._id, parseInt(tokens[2]), tokens[3], tokens.slice(4).join(" "));
-	    }
+		Tracker.addStatus(token.get('id'), parseInt(tokens[2]), tokens[3], tokens.slice(4).join(" "));
+		//Tracker.addStatus(selected[i]._id, parseInt(tokens[2]), tokens[3], tokens.slice(4).join(" "));
+		}
 	    break;
 	case "list":
 	case "show":
