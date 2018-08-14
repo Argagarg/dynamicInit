@@ -13,16 +13,17 @@ var Tracker = Tracker || {
 			'overwatch':"all-for-one",'inspired':"trophy", 'hallucinating':"aura", 'haywire':"spanner", 'bloodloss':"half-haze",
 			'blinded':"bleeding-eye", 'deafened':"lightning-helix", 'fire':"three-leaves", 'engaged':"fist", 'grabbed':"grab",
 			'feared':"screaming", 'unconscious':"sleepy", 'uselesslimb':"broken-skull", 'criticallywounded':"broken-heart",
-			'heavilywounded':"half-heart", 'lightlywounded':"chained-heart"},
+			'heavilywounded':"half-heart", 'lightlywounded':"chained-heart", 'prone':"tread", 'fullaim':"frozen-orb",
+			'alloutatk':"overdrive"},
 
 	INITIATIVE_MOD: {'unconscious':-100, 
-			'helpless':-20, 'stunned':-20, 
+			'helpless':-20, 'stunned':-20, 'yellow': -20,
 			'feared':-15, 'pinned':-15, 'fire':-15, 
-			'grabbed':-10,
-			'arrowed':-5, 'prone':-5, 'blinded':-5, 'deafened':-5,
-			'aiming':5,
-			'guarded':10,
-			'defensive':20,
+			'grabbed':-10, 'alloutatk':-10, 'pink':-10,
+			'crippled':-5, 'prone':-5, 'blinded':-5, 'deafened':-5, 'heavilywounded': -5, 'purple':-5,
+			'aiming':5, 'green': 5,
+			'guarded':10, 'fullaim':10, 'blue': 10,
+			'defensive':20, 'red':20
 	},
 
 
@@ -173,7 +174,14 @@ var Tracker = Tracker || {
 		//calculate the initiative modifiers for each token
 		for(var i = 0; i <state.InitiativeTracker.status.length; i++){
 			var curStatus=state.InitiativeTracker.status[i];
-			//TODO: This inversion is messing something up with the turn name announcer; it could be fucking other shit up
+			/*if(!Tracker.INITIATIVE_MOD[curStatus.status]){continue;}
+			tokenStatuses[curStatus.token]=curStatus.status;
+			if(!initModArray[curStatus.token]){
+				initModArray[curStatus.token]=parseInt(Tracker.INITIATIVE_MOD[curStatus.status]);
+			}else{
+				initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[curStatus.status]);
+			}*/
+
 			var temp = (_.invert(Tracker.STATUS_ALIASES))[curStatus.status];
 			if(!Tracker.INITIATIVE_MOD[temp]){continue;}
 			tokenStatuses[curStatus.token]=temp;
@@ -182,13 +190,16 @@ var Tracker = Tracker || {
 			}else{
 				initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[temp]);
 			}
+			//log("ID:"+curStatus.token+" has a status of:"+curStatus.status+" and a modifier of "+initModArray[curStatus.token]);
 		}
 		
 		_.each(currentPageGraphics, function(graphic) {
-			tokenid=graphic.get('id');   
+			tokenid=graphic.get('id');
+			//tokenid=graphic._id;    
 			//only check tokens which have bar values (are character tokens of some kind)
 			if(graphic.get('bar3_value')!=''){
 				exists=false;
+				generic=false;
 				//check to see if the token is linked to a character
 				charid=graphic.get('represents');
 				if(charid != undefined && charid != ''){
@@ -204,7 +215,6 @@ var Tracker = Tracker || {
 					if(matchingCharacters.length == 0){
 						//no matching characters, so we do something generic
 						roll=randomInteger(10);
-						initBonus=0;
 					} else{
 						//we take the first character match and, if we haven't already, pull attributes from it
 						charid=matchingCharacters[0].get('id');
@@ -214,9 +224,12 @@ var Tracker = Tracker || {
 						if(exists==false){
 							initBonus=getAttrByName(charid,"AgilityMod","current");
 							roll=randomInteger(10)+parseInt(initBonus);
+							rollArray[charid]=roll;
+							//log("", "The mook has an IB of "+ initBonus);
 							usedCharArray.push(charid);
 							initDupeArray[charid]=initModArray[tokenid];
 						}else{
+							//log("The mook duplicate didn't roll");
 							initBonus=getAttrByName(charid,"AgilityMod","current");
 							if(initModArray[tokenid]==initDupeArray[charid]){duplicateInit=true;}
 							else{duplicateInit=false;}
@@ -225,10 +238,7 @@ var Tracker = Tracker || {
 				}
 				//push onto turnorder array
 				if(exists==false){
-					if(initModArray[tokenid]){
-						roll=roll+parseInt(initModArray[tokenid]);
-						rollArray[charid]=roll;
-					}
+					if(initModArray[tokenid]){roll=roll+parseInt(initModArray[tokenid]);}
 					newEntry={id: tokenid, pr: roll, custom: initBonus, _pageid: page_id};
 					while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
 					if(newEntry.pr === turnorder[turnorder.length-1].pr){
@@ -239,10 +249,8 @@ var Tracker = Tracker || {
 					while(oldstack.length >0){turnorder.push(oldstack.pop());}
 				} else if (exists==true && duplicateInit==false){
 					//check for statuses and apply their initiative modifiers
-					if(initModArray[tokenid]){
-						roll=rollArray[charid]+parseInt(initModArray[tokenid]);
-					}
-					newEntry={id: tokenid, pr: roll, custom: "", _pageid: page_id};
+					if(initModArray[tokenid]){roll=parseInt(rollArray[charid])+parseInt(initModArray[tokenid]);}
+					newEntry={id: tokenid, pr: roll, custom: initBonus, _pageid: page_id};
 					while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
 					if(newEntry.pr === turnorder[turnorder.length-1].pr){
 						if(newEntry.custom > turnorder[turnorder.length-1].custom){oldstack.push(turnorder.pop());}
@@ -254,6 +262,7 @@ var Tracker = Tracker || {
 			}
 		});
 		//Push turnorder to roll20
+		//log("Turn Order Str: " + JSON.stringify(turnorder));
 		Campaign().set("turnorder", JSON.stringify(turnorder));
 	}
 
