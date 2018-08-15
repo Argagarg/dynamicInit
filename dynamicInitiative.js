@@ -16,7 +16,7 @@ var Tracker = Tracker || {
 			'heavilywounded':"half-heart", 'lightlywounded':"chained-heart", 'prone':"tread", 'fullaim':"frozen-orb",
 			'alloutatk':"overdrive", 'majinitpenalty':"yellow",'lginitpenalty':"half-haze", 'initpenalty':"pink",'mininitpenalty':"purple",
 			'mininitbonus':"green",'initbonus':"blue",'lginitbonus':"brown",'majinitbonus':"red"},
-
+	//TODO: fix so it searches status list and aliases, not just aliases
 	INITIATIVE_MOD: {'unconscious':-100, 
 			'helpless':-20, 'stunned':-20, 'majinitpenalty': -20,
 			'feared':-15, 'pinned':-15, 'fire':-15, 'lrginitpenalty':-15,
@@ -29,31 +29,35 @@ var Tracker = Tracker || {
 	},
 
 
-
-    CONFIG_PARAMS: [['announceRounds',		"Announce Each Round"],
-		    ['announceTurns',		"Announce Each Player's Turn"],
-		    ['announceExpiration',	"Announce Status Expirations"],
-			['highToLow',		   "High-to-Low Initiative Order"],
-			['pooledInit',		     "Pooled Mook Iniative Rolls"],
-			['dynamicInit',					 "Dynamic Initiative"],
-			['statusRound',				"Status Updated on Round"],
-			['wh40ksheet',				 "using Args WH40k sheet"],
-			['wh40krollscripts',	   "using Args WH40k scripts"]
+	//TODO: Build the code for the wh40ksheet, wh40krollscripts, and statusRound parameters
+    CONFIG_PARAMS: [['announceRounds',				 "Announce Each Round"],
+		    ['announceTurns',				 "Announce Each Player's Turn"],
+		    ['announceExpiration',			 "Announce Status Expirations"],
+			['highToLow',		   			"High-to-Low Initiative Order"],
+			['pooledInit',		     		  "Pooled Mook Iniative Rolls"],
+			['dynamicInit',					 		  "Dynamic Initiative"],
+			['statusRound',						 "Status Updated on Round"],
+			['wh40ksheet',				 		  "using Args WH40k sheet"],
+			['wh40krollscripts',	   			"using Args WH40k scripts"],
+			['autoremovedead', 			"automatically remove dead tokens"],
+			['complexstatushandler',  "handles status markers differently"]
 		],
 
 
     initConfig: function(){
 	if (!state.hasOwnProperty('InitiativeTracker')){
 	    state.InitiativeTracker = {
-					'highToLow':		true,
-					'announceRounds':	true,
-					'announceTurns':	true,
+					'highToLow':			true,
+					'announceRounds':		true,
+					'announceTurns':		true,
 					'announceExpiration':	true,
-					'pooledInit':		true,
-					'dynamicInit':		true,
-					'statusRound':		true,
-					'wh40ksheet':		true,
-					'wh40krollscripts': true,
+					'pooledInit':			true,
+					'dynamicInit':			true,
+					'statusRound':			true,
+					'wh40ksheet':			true,
+					'wh40krollscripts': 	true,
+					'autoremovedead':		true,
+					'complexstatushandler': true,
 	    };
 	}
 	if (!state.InitiativeTracker.hasOwnProperty('round')){
@@ -144,7 +148,7 @@ var Tracker = Tracker || {
 
 	///////////////////////////////////////////////////////////
 	//
-	//HOOK: This is where I do the dynamic initiative rerolls!
+	//HOOK: This is the start of the dynamic initiative modifications
 	//
 	///////////////////////////////////////////////////////////
 	if (roundChanged){
@@ -154,22 +158,24 @@ var Tracker = Tracker || {
 		
 		//Dynamic Init hook: find all the tokens on the map and reroll their initiative
 		if(state.InitiativeTracker['dynamicInit']===true){
-			var charid;
-			var tokenid;
-			var matchingCharacters;
-			var initBonus;
-			var roll;
-			var usedCharArray = [];
+			var charid='';
+			var tokenid='';
+			var matchingCharacters={};	//tracks character sheets with the same character name as a token's name
+			var initBonus=0;
+			var roll=0;
+			var usedCharArray = [];		//tracks the charids that have already been rolled for
 			var turnorder=[];
 			var oldstack=[];
 			var newEntry={};
-			var tokenStatuses={};
+			var tokenStatuses={}; //stores token names and one of their statuses (might be an issue for tokens with multiple statuses?)
 			var initModArray={};
-			var initDupeArray={};
+			var initDupeArray={}; //stores character ids and the extant status initiative modifier for that character (might be an issue for characters with multiple tokens with multiple statuses)
 			var rollArray={};
 			var duplicateInit=false;
-			var page_id;
-			var exists;
+			var page_id='';
+			var exists=false;
+			var curStatus='';
+			var alias='';
 			var currentPageGraphics = findObjs({                              
 				_pageid: Campaign().get("playerpageid"),                              
 				_type: "graphic",    
@@ -187,7 +193,7 @@ var Tracker = Tracker || {
 
 			//calculate the initiative modifiers for each token
 			for(var i = 0; i <state.InitiativeTracker.status.length; i++){
-				var curStatus=state.InitiativeTracker.status[i];
+				curStatus=state.InitiativeTracker.status[i];
 				/*if(!Tracker.INITIATIVE_MOD[curStatus.status]){continue;}
 				tokenStatuses[curStatus.token]=curStatus.status;
 				if(!initModArray[curStatus.token]){
@@ -195,20 +201,23 @@ var Tracker = Tracker || {
 				}else{
 					initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[curStatus.status]);
 				}*/
-				var temp = (_.invert(Tracker.STATUS_ALIASES))[curStatus.status];
-				if(!Tracker.INITIATIVE_MOD[temp]){continue;}
-				tokenStatuses[curStatus.token]=temp;
-				if(!initModArray[curStatus.token]){
-					initModArray[curStatus.token]=parseInt(Tracker.INITIATIVE_MOD[temp]);
+				alias = (_.invert(Tracker.STATUS_ALIASES))[curStatus.status]; //TODO: fix how the invert fucks up the turn announcement naming
+				if(!Tracker.INITIATIVE_MOD[alias] && !Tracker.INITIATIVE_MOD[curStatus.status]){continue;}
+				if(!Tracker.INITIATIVE_MOD[alias]){
+					tokenStatuses[curStatus.token]=curStatus.status;
+					if(!initModArray[curStatus.token]){initModArray[curStatus.token]=parseInt(Tracker.INITIATIVE_MOD[curStatus.status]);}
+					else{initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[curStatus.status]);}
 				}else{
-					initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[temp]);
+					tokenStatuses[curStatus.token]=alias;
+					if(!initModArray[curStatus.token]){initModArray[curStatus.token]=parseInt(Tracker.INITIATIVE_MOD[alias]);}
+					else{initModArray[curStatus.token]+=parseInt(Tracker.INITIATIVE_MOD[alias]);}
 				}
 			}
 			
 			_.each(currentPageGraphics, function(graphic) {
 				tokenid=graphic.get('id');    
-				//only check tokens which have bar values (are character tokens of some kind)
-				if(graphic.get('bar3_value')!=''){
+				//only check tokens which have bar3 values (are character tokens of some kind)
+				if(graphic.get('bar3_value')!='' &&(state.InitiativeTracker['autoremovedead']===false|| !graphic.get('statusmarkers').includes('dead'))){
 					exists=false;
 					//check to see if the token is linked to a character
 					charid=graphic.get('represents');
@@ -225,52 +234,36 @@ var Tracker = Tracker || {
 						});
 						if(matchingCharacters.length == 0){
 							//generic tokens with no matching character get a generic roll
+							initBonus=0;
 							roll=randomInteger(10);
 						} else{
 							//if there's a matching character but the token isn't directly linked then the character is a mook
 							charid=matchingCharacters[0].get('id');
-							if(state.InitiativeTracker['pooledInit']===true){
-								_.each(usedCharArray, function(used) {
-									if(used===charid){exists=true;}
-								});
-							}
-							if(exists==false){
+							if(state.InitiativeTracker['pooledInit']===true){exists = !usedCharArray.every(function(used){return used !==charid;});}
+							if(exists===false){
 								//handles first instance of a mook
 								initBonus=getAttrByName(charid,"AgilityMod","current");
 								roll=randomInteger(10)+parseInt(initBonus);
+
 								rollArray[charid]=roll;
 								usedCharArray.push(charid);
 								initDupeArray[charid]=initModArray[tokenid];
 							}else{
 								//handles subsequent instances of a mook
 								initBonus=getAttrByName(charid,"AgilityMod","current");
+								roll=rollArray[charid];
+
 								if(initModArray[tokenid]==initDupeArray[charid]){duplicateInit=true;}
 								else{duplicateInit=false;}
 							}
 						}
 					}
 					//place in ordered turnorder array IF the character hasn't already been added OR the character is a mook with an adjusted initiative value
-					log("Logging a Token with ID: "+tokenid+", a roll of: "+roll+", an init bonus of: "+initBonus+", and a initiative modifier of: "+initModArray[tokenid]);
-					if(exists==false){
+					log("Logging a Token with ID: "+tokenid+", a name of: "+graphic.get('name')+"a roll of: "+roll+", an init bonus of: "+initBonus+", and a initiative modifier of: "+initModArray[tokenid]);
+					if(exists===false || (exists===true && duplicateInit===false)){
+						//check for a status-based init modifier and add it, if needed
 						if(initModArray[tokenid]){roll=roll+parseInt(initModArray[tokenid]);}
-						//graphic.set('name',graphic.get('name')+"--"+graphic.get('statusmarkers').split(',')[0]);
-						//graphic.set('name',graphic.get('name').split('--')[0]);
-						//if(initModArray[tokenid]){graphic.set('name',graphic.get('name')+"--"+initModArray[tokenid]);}
-						//else{graphic.set('name',graphic.get('name')+"--"+0);}
-						newEntry={id: tokenid, pr: roll, custom: initBonus, _pageid: page_id};
-						while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
-						if(newEntry.pr === turnorder[turnorder.length-1].pr){
-							if(newEntry.custom > turnorder[turnorder.length-1].custom){oldstack.push(turnorder.pop());}
-							else{turnorder.push(newEntry);}
-						}
-						if(newEntry.pr < turnorder[turnorder.length-1].pr){turnorder.push(newEntry);}
-						while(oldstack.length >0){turnorder.push(oldstack.pop());}
-					} else if (exists==true && duplicateInit==false){
-						if(initModArray[tokenid]){roll=parseInt(rollArray[charid])+parseInt(initModArray[tokenid]);}
-						//graphic.set('name',graphic.get('name')+"--"+graphic.get('statusmarkers').split(',')[0]);
-						//graphic.set('name',graphic.get('name').split('--')[0]);
-						//if(initModArray[tokenid]){graphic.set('name',graphic.get('name')+"--"+initModArray[tokenid]);}
-						//else{graphic.set('name',graphic.get('name')+"--"+0);}
+						//place the new entry in an ordered position on the stack
 						newEntry={id: tokenid, pr: roll, custom: initBonus, _pageid: page_id};
 						while(newEntry.pr > turnorder[turnorder.length-1].pr){oldstack.push(turnorder.pop());}
 						if(newEntry.pr === turnorder[turnorder.length-1].pr){
