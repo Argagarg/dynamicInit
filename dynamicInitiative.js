@@ -28,6 +28,19 @@ var Tracker = Tracker || {
 			'defensive':20, 'majinitbonus':20
 	},
 
+	//for use with the complex status handler; sets status aliases to either persistent, rounds, or round
+	STATUS_TYPES: {
+		'crippled':"persistent", 'helpless':"persistent", 'pinned':"persistent", 'prone':"persistent",
+		'frenzied':"persistent", 'stunned':"rounds", 'unaware':"round", 'hidden':"persistent",
+		'aiming':"round", 'braced':"persistent", 'defensive':"round", 'guarded':"round", 'overwatch':"round",
+		'inspired':"round", 'hallucinating':"rounds", 'haywire':"rounds", 'bloodloss':"persistent",
+		'blinded':"rounds", 'deafened':"rounds", 'fire':"rounds", 'engaged':"persistent", 'grabbed':"persistent",
+		'feared':"round", 'unconscious':"persistent", 'uselesslimb':"rounds", 'criticallywounded':"persistent",
+		'heavilywounded':"persistent", 'lightlywounded':"persistent", 'prone':"persistent", 'fullaim':"round",
+		'alloutatk':"round",'majinitpenalty':"round", 'lginitpenalty':"round", 'initpenalty':"round",'mininitpenalty':"round",
+		'mininitbonus':"round",'initbonus':"round",'lginitbonus':"round",'majinitbonus':"round"
+	},
+
 
 	//TODO: Build the code for the wh40ksheet, wh40krollscripts, and statusRound parameters
     CONFIG_PARAMS: [['announceRounds',				 "Announce Each Round"],
@@ -505,6 +518,20 @@ var Tracker = Tracker || {
     addStatus: function(tokenId, duration, status, name){
 	var token = getObj("graphic", tokenId);
 	if (!token){ return; }
+	
+	/////////////////////////////////////////////////
+	//
+	//HOOK: This is where the status filtering occurs
+	//
+	/////////////////////////////////////////////////
+	//if (Tracker.STATUS_ALIASES[status]){status = (_.invert(Tracker.STATUS_ALIASES))[status];}
+	if(state.InitiativeTracker['complexstatushandler']===true){
+		if(Tracker.STATUS_TYPES[status]=="persistent"){duration=300;}
+		else if(Tracker.STATUS_TYPES[status]=="round"){duration=1;}
+		else if(Tracker.STATUS_TYPES[status]=="rounds"){}
+	}
+
+
 	if (Tracker.STATUS_ALIASES[status]){ status = Tracker.STATUS_ALIASES[status]; }
 	state.InitiativeTracker.status.push({'token':	tokenId,
 					    'expires':	state.InitiativeTracker.round + duration,
