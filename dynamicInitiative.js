@@ -181,6 +181,110 @@ var Tracker = Tracker || {
 		state.InitiativeTracker.token = {};
 	},
 
+	dataSync: function () {
+		var oldTurnOrderStr = Campaign().get('turnorder') || "[]";
+		var turnOrder = JSON.parse(oldTurnOrderStr);
+		var tokenid;
+		var turn;
+		var expires;
+		var tokenInit;
+		var nextInitiative;
+		var statusname;
+		var tokenStatusStr = '';
+		var tokenStatusArr = [];
+		var statusArr = [];
+		var currentPageGraphics = findObjs({
+			_pageid: Campaign().get("playerpageid"),
+			_type: "graphic",
+			_subtype: "token",
+		});
+
+		state.InitiativeTracker.token = {};
+
+		_.each(currentPageGraphics, function (selToken) {
+			if (selToken.get('bar3_value') != '' && (state.InitiativeTracker['autoremovedead'] === false || !selToken.get('statusmarkers').includes('dead'))) {
+				//get a qualifying token and find a matching entry in the initiative order to get its init
+				tokenid = selToken.get('id');
+				turn = turnOrder.find(function (o) {
+					return o.id === tokenid;
+				});
+				if (false) tokenInit = turnOrder[turn.id]; //TODO: fix
+				else tokenInit = 0;
+				nextInitiative = 0;
+				statusArr = [];
+
+				//get token's status markers and build the status array
+				tokenStatusStr = selToken.get('statusmarkers');
+				tokenStatusArr = tokenStatusStr.split(',');
+				if (tokenStatusArr[0] != '' && tokenStatusArr[0] != undefined) {
+					_.each(tokenStatusArr, function (selStatus) {
+						statusname = selStatus.split('@')[0];
+						if (statusname != '' && statusname != undefined) {
+							if (selStatus.split('@')[1]) expires = selStatus.split('@')[1];
+							else expires = 999;
+							alias = _.invert(Tracker.STATUS_ALIASES)[statusname];
+							//alias = Tracker.STATUS_ALIASES[statusname];
+							if (!alias) alias = '';
+							if (Tracker.INITIATIVE_MOD[alias]) nextInitiative += Tracker.INITIATIVE_MOD[alias];
+							else if (Tracker.INITIATIVE_MOD[statusname]) nextInitiative += Tracker.INITIATIVE_MOD[statusname];
+							statusArr.push({
+								'duration': expires,
+								'count': state.InitiativeTracker.count,
+								'name': statusname,
+								'alias': alias,
+								'severity': 0
+							});
+						}
+					});
+				}
+				//fully set the entry for the token
+				state.InitiativeTracker.token[tokenid] = {
+					initiative: tokenInit,
+					nextInitiative: nextInitiative,
+					name: selToken.get('name'),
+					statuses: statusArr
+				};
+			}
+		});
+	},
+
+	getInitModFromAliasOrStatus: function (name) {
+		var output;
+		if (Tracker.INITIATIVE_MOD[name]) {
+			output = Tracker.INITIATIVE_MOD[name];
+			return output;
+		}
+		//if we don't get a name match, try looking for a paired status or alias and try again
+		if (Tracker.STATUS_ALIASES[name]) name = Tracker.STATUS_ALIASES[name];
+		else if (_.invert(Tracker.STATUS_ALIASES)[name]) name = _.invert(Tracker.STATUS_ALIASES)[name];
+
+		if (Tracker.INITIATIVE_MOD[name]) output = Tracker.INITIATIVE_MOD[name];
+		else output = 0;
+
+		return output;
+	},
+
+	getAliasOrName: function (status) {
+		var output;
+		if(status.alias) output=status.alias;
+		else if (status.name) output=status.name;
+		else output = 'unknown';
+		return output;
+	},
+
+	stackTokenSync: function (id) {
+		if (!state.InitiativeTracker.token[id]) {
+			var name = getObj("graphic", id).get('name');
+			if(!name) name = 'unknown';
+			state.InitiativeTracker.token[id] = {
+				initiative: 0,
+				nextInitiative: 0,
+				name: name,
+				statuses: []
+			};
+		}
+	},
+	
 	announceRound: function (round) {
 		if (!state.InitiativeTracker.announceRounds) {
 			return;
@@ -266,14 +370,8 @@ var Tracker = Tracker || {
 		//Adjust statuses for the token whose turn just ended (the previous token)
 		if (newTurns[newTurns.length - 1].id != -1) {
 			var currentToken = getObj("graphic", newTurns[newTurns.length - 1].id);
-			if (!state.InitiativeTracker.token[newTurns[newTurns.length - 1].id]) {
-				state.InitiativeTracker.token[newTurns[newTurns.length - 1].id] = {
-					initiative: 0,
-					nextInitiative: 0,
-					name: currentToken.get('name'),
-					status: []
-				};
-			}
+			//create a new token entry if necessary
+			Tracker.stackTokenSync(newTurns[newTurns.length - 1].id);
 			var currentStackToken = state.InitiativeTracker.token[newTurns[newTurns.length - 1].id];
 			var characterName = currentToken.get('name');
 			matchingTokens = findObjs({
@@ -283,44 +381,20 @@ var Tracker = Tracker || {
 				name: characterName
 			});
 
-			//find all tokens with a given name
+			//find all tokens that match a given character name
 			_.each(matchingTokens, function (selToken) {
-				//sync the stack with extant tokens
-				if (!state.InitiativeTracker.token[selToken.id]) {
-					state.InitiativeTracker.token[selToken.id] = {
-						initiative: 0,
-						nextInitiative: 0,
-						name: selToken.get('name'),
-						status: []
-					};
-				}
-				if (!state.InitiativeTracker.token[selToken.id].initiative) {
-					state.InitiativeTracker.token[selToken.id].initiative = 0;
-				}
-				if (!state.InitiativeTracker.token[selToken.id].nextInitiative) {
-					state.InitiativeTracker.token[selToken.id].nextInitiative = 0;
-				}
-
 				var selStackToken = state.InitiativeTracker.token[selToken.id];
-				log(selToken.get('name') + " with id: " + selToken.id + " and initiative of " + selStackToken.initiative);
-
 				if (selStackToken.initiative == currentStackToken.initiative) {
-					var curAlias = '';
-					log(selToken.get('name') + " with id: " + selToken.id + " shares an initiative of: " + currentStackToken.initiative);
 					_.each(selStackToken.statuses, function (selStatus, index) {
-						//log(selToken.get('name')+ " with id: "+selToken.id+" has a status of "+selStatus.status+" that expires in");
-						selStatus.expires--;
-						if (selStatus.expires <= 0) {
-							selToken.set("status_" + selStatus.status, false);
-							curAlias = (_.invert(Tracker.STATUS_ALIASES))[selStatus.status];
-							selStackToken.nextInitiative -= Tracker.INITIATIVE_MOD[curAlias];
-							log(selToken.get('name') + " with id: " + selToken.id + "found an alias of: " + curAlias + ", set the next init to: " + selStackToken.nextInitiative + ", and has a current init of: " + selStackToken.initiative);
-							Tracker.announceStatusExpiration(selStatus.name, selToken.get('name'));
+						selStatus.duration--;
+						if (selStatus.duration <= 0) {
+							selToken.set("status_" + selStatus.name, false);
+							selStackToken.nextInitiative -= Tracker.getInitModFromAliasOrStatus(Tracker.getAliasOrName(selStatus));
+							Tracker.announceStatusExpiration(Tracker.getAliasOrName(selStatus), selToken.get('name'));
 							selStackToken.statuses.splice(index, 1);
-						} else if (selStatus.expires < 10) {
+						} else if (selStatus.duration < 10) {
 							// status has nine or fewer rounds left; update marker to reflect remaining rounds
-							log(selToken.get('name') + " with id: " + selToken.id + " has a status of " + selStatus.status + " that expires in " + selStatus.expires + "rounds.");
-							selToken.set("status_" + selStatus.status, selStatus.expires);
+							selToken.set("status_" + selStatus.name, selStatus.duration);
 						}
 					});
 				}
@@ -414,21 +488,7 @@ var Tracker = Tracker || {
 						exists = false;
 
 						//synchronize the init tracker stucture with the extant tokens
-						if (!state.InitiativeTracker.token[tokenid]) {
-							state.InitiativeTracker.token[tokenid] = {
-								initiative: 0,
-								nextInitiative: 0,
-								name: graphic.get('name'),
-								status: []
-							};
-						}
-						if (!state.InitiativeTracker.token[tokenid].initiative) {
-							state.InitiativeTracker.token[tokenid].initiative = 0;
-						}
-						if (!state.InitiativeTracker.token[tokenid].nextInitiative) {
-							state.InitiativeTracker.token[tokenid].nextInitiative = 0;
-						}
-
+						Tracker.stackTokenSync(tokenid);
 						stackToken = state.InitiativeTracker.token[tokenid];
 						stackToken.initiative = stackToken.nextInitiative;
 						stackTokenInit = stackToken.initiative;
@@ -436,12 +496,15 @@ var Tracker = Tracker || {
 						//check to see if the token is linked to a character
 						charid = graphic.get('represents');
 						if (charid != undefined && charid != '') {
+
 							//if the token represents a character we handle it uniquely
 							initBonus = getAttrByName(charid, "AgilityMod", "current");
+
 							//TODO: eventually, we want linked characters to have their initiative modifier reflected in the character sheet
 							roll = randomInteger(10) + parseInt(initBonus);
 							log("INIT: [UNIQUE] " + graphic.get('name') + " with token id " + graphic.get('id') + " and character id of " + charid + " has a premodified init roll of " + roll);
 						} else {
+
 							//if there's no linked char, see if we can find any characters with the exact same name as the token
 							characterName = graphic.get('name');
 							matchingCharacters = findObjs({
@@ -452,8 +515,8 @@ var Tracker = Tracker || {
 								//generic tokens with no matching character get a generic roll
 								initBonus = 0;
 								roll = randomInteger(10);
-								log("INIT: [GENERI] " + graphic.get('name') + " with token id " + graphic.get('id') + " is a generic token with a premodified init roll of " + roll);
 							} else {
+
 								//if there's a matching character but the token isn't directly linked then the character is a mook
 								charid = matchingCharacters[0].get('id');
 								if (state.InitiativeTracker['pooledInit'] === true) {
@@ -462,60 +525,74 @@ var Tracker = Tracker || {
 									});
 								}
 								if (exists === false) {
+
 									//handles first instance of a mook
 									initBonus = getAttrByName(charid, "AgilityMod", "current");
 									roll = randomInteger(10) + parseInt(initBonus);
 
 									rollArray[charid] = roll;
 									usedCharArray.push(charid);
-									log("INIT: [MOOKIE] " + graphic.get('name') + " with token id " + graphic.get('id') + " and character id of " + charid + " has a premodified init roll of " + roll);
 								} else {
+
 									//handles subsequent instances of a mook
 									initBonus = getAttrByName(charid, "AgilityMod", "current");
 									roll = rollArray[charid];
-									log("INIT: [MOOKIE] " + graphic.get('name') + " with token id " + graphic.get('id') + " and character id of " + charid + " has a premodified init roll of " + roll);
 								}
 							}
 						}
+
 						//add any status-based initiative modifications
 						roll += parseInt(stackTokenInit);
-						log("INIT: [INITMO] " + graphic.get('name') + " with token id " + graphic.get('id') + " and character id of " + charid + " has a postmodified init roll of " + roll);
 						if (charid) {
 							duplicateInit = _.some(adjRollArray[charid], function (value) {
 								return value === roll;
 							});
-							if (exists === false) {
-								adjRollArray[charid] = [];
-							}
-							if (duplicateInit === false) {
-								adjRollArray[charid].push(roll);
-							}
+							if (exists === false) adjRollArray[charid] = [];
+							if (duplicateInit === false) adjRollArray[charid].push(roll);
 						}
-						//TODO: I'm randomly dropping mooks here and they're not getting into the turn order, even though
-						log("INIT: [INITMO] " + graphic.get('name') + " with token id " + graphic.get('id') + " and character id of " + charid + " has an exists of " + exists + " and a duplicateInit of " + duplicateInit);
+
 						//place in ordered turnorder array IF the character hasn't already been added OR the character is a mook with an adjusted initiative value
-						//log("Logging a Token with ID: " + tokenid + ", a name of: " + graphic.get('name') + ", a roll of: " + roll + ", an init bonus of: " + initBonus + ", and a initiative modifier of: ");
 						if (exists === false || (exists === true && duplicateInit === false)) {
+
 							//place the new entry in an ordered position on the stack
 							newEntry = {
 								id: tokenid,
 								pr: roll,
-								custom: initBonus,
+								custom: graphic.get('name'),
 								_pageid: page_id
 							};
+
+							//remove items from the stack until we encounter a roll entry equal to or less than the top of the stack
 							while (newEntry.pr > turnorder[turnorder.length - 1].pr) {
 								oldstack.push(turnorder.pop());
 							}
+
+							//check the tiebreaker if tied or just add it to the stack
 							if (newEntry.pr === turnorder[turnorder.length - 1].pr) {
-								if (newEntry.custom > turnorder[turnorder.length - 1].custom) {
-									oldstack.push(turnorder.pop());
-								} else {
-									turnorder.push(newEntry);
+								//get the initiative bonuses for the requisite tokens' characters
+								var newTokenInitBonus, oldTokenInitBonus;
+								if(charid) newTokenInitBonus=getAttrByName(charid, "AgilityMod", "current");
+								else newTokenInitBonus=0;
+								oldTokenInitBonus = getObj("graphic",turnorder[turnorder.length - 1].id).get('represents');
+								if(oldTokenInitBonus) oldTokenInitBonus=getAttrByName(oldTokenInitBonus, "AgilityMod", "current");
+								else {
+									matchingCharacters = findObjs({
+										_type: "character",
+										name: characterName,
+									});
+									if(matchingCharacters.length===0) oldTokenInitBonus=0;
+									else oldTokenInitBonus=getAttrByName(matchingCharacters[0].id, "AgilityMod", "current");
 								}
-							}
-							if (newEntry.pr < turnorder[turnorder.length - 1].pr) {
+
+								if (newTokenInitBonus > oldTokenInitBonus) oldstack.push(turnorder.pop());
 								turnorder.push(newEntry);
+							} else if (newEntry.pr < turnorder[turnorder.length - 1].pr) {
+								turnorder.push(newEntry);
+							} else {
+								log("something fucked up");
 							}
+
+							//restore the bottom of the stack
 							while (oldstack.length > 0) {
 								turnorder.push(oldstack.pop());
 							}
@@ -523,12 +600,6 @@ var Tracker = Tracker || {
 					}
 				});
 
-				/*turnorder.push({
-					id: "-1",
-					pr: -200,
-					custom: "Round End",
-					_pageid: page_id
-				});*/
 				//Push turnorder to roll20
 				log("Turn Order Str: " + JSON.stringify(turnorder));
 				Campaign().set("turnorder", JSON.stringify(turnorder));
@@ -642,65 +713,9 @@ var Tracker = Tracker || {
 		}
 		switch (tokens[1]) {
 			//TODO: fix all of this shit
-			case "round":
-				if (tokens.length <= 2) {
-					Tracker.write("Current Round: " + state.InitiativeTracker.round, who, "", "Tracker");
-				} else {
-					var round = parseInt(tokens[2]);
-					if (round != state.InitiativeTracker.round) {
-						state.InitiativeTracker.round = round;
-						if (state.InitiativeTracker.announceRounds) {
-							sendChat("", "/desc Moved to Round " + round);
-						}
-						// update all statuses
-						var curCount = state.InitiativeTracker.count;
-						if (!state.InitiativeTracker.highToLow) {
-							curCount = -curCount;
-						}
-						for (var i = 0; i < state.InitiativeTracker.token.length; i++) {
-							var token = getObj("graphic", state.InitiativeTracker.token[i]);
-							if (!token) {
-								// token associated with this status doesn't exist anymore; remove it
-								state.InitiativeTracker.token[i].status.splice(i, 1);
-								i -= 1;
-								continue;
-							}
-							for (var j = 0; j < state.InitiativeTracker.token[i].status.length; i++) {
-								var status = state.InitiativeTracker.token[i].status[j];
-								var statusCount = status.count;
-								if (!state.InitiativeTracker.highToLow) {
-									statusCount = -statusCount;
-								}
-								var statusDuration = status.expires - round;
-								if (statusCount > curCount) {
-									// haven't yet come to this status' initiative count; increment remaining duration
-									statusDuration += 1;
-								}
-								if (statusDuration < 0) {
-									// status expired; remove marker and announce expiration
-									token.set("status_" + status.status, false);
-									state.InitiativeTracker.token[i].status.splice(i, 1);
-									i -= 1;
-									Tracker.announceStatusExpiration(status.name, token.get('name'));
-								} else if (statusDuration < 10) {
-									// status has nine or fewer rounds left; update marker to reflect remaining rounds
-									token.set("status_" + status.status, statusDuration);
-								}
-							}
-						}
-					}
-				}
-				break;
-			case "forward":
-			case "fwd":
-				var oldTurnOrderStr = Campaign().get('turnorder') || "[]";
-				var turnOrder = JSON.parse(oldTurnOrderStr);
-				if (turnOrder.length > 0) {
-					turnOrder.push(turnOrder.shift());
-					var newTurnOrderStr = JSON.stringify(turnOrder);
-					Campaign().set('turnorder', newTurnOrderStr);
-					Tracker.handleTurnChange(newTurnOrderStr, oldTurnOrderStr);
-				}
+			case "sync":
+				Tracker.dataSync();
+				Tracker.write("Backend sync finished", "", "Tracker");
 				break;
 			case "back":
 				var oldTurnOrderStr = Campaign().get('turnorder') || "[]";
@@ -715,7 +730,7 @@ var Tracker = Tracker || {
 					Tracker.handleTurnChange(newTurnOrderStr, oldTurnOrderStr);
 				}
 				break;
-			case "start":
+			case "restart":
 				var turnOrder = JSON.parse(Campaign().get('turnorder') || "[]");
 				if (turnOrder.length > 0) {
 					turnOrder.sort(function (x, y) {
@@ -783,14 +798,7 @@ var Tracker = Tracker || {
 		if (!token) {
 			return;
 		}
-		var alias = '';
 
-		/////////////////////////////////////////////////
-		//
-		//HOOK: This is where the status filtering occurs
-		//
-		/////////////////////////////////////////////////
-		//if (Tracker.STATUS_ALIASES[status]){status = (_.invert(Tracker.STATUS_ALIASES))[status];}
 		if (state.InitiativeTracker['complexstatushandler'] === true) {
 			if (Tracker.STATUS_TYPES[status] == "persistent") {
 				duration = 300;
@@ -799,46 +807,27 @@ var Tracker = Tracker || {
 			} else if (Tracker.STATUS_TYPES[status] == "rounds") {}
 		}
 
-		alias = status;
+		//determine the alias and status
 		if (Tracker.STATUS_ALIASES[status]) {
-
-			status = Tracker.STATUS_ALIASES[status];
+			alias=status;
+			status=Tracker.STATUS_ALIASES[status];
+		}else if(_.invert(Tracker.STATUS_ALIASES)[status]) {
+			alias=_.invert(Tracker.STATUS_ALIASES)[status];
+		}else {
+			alias='';
+			status='';
 		}
 
 		//sync stack with extant tokens
-		if (!state.InitiativeTracker.token[tokenId]) {
-			state.InitiativeTracker.token[tokenId] = {
-				initiative: 0,
-				nextInitiative: 0,
-				name: token.get('name'),
-				status: []
-			};
-		}
-		if (!state.InitiativeTracker.token[tokenId].initiative) {
-			state.InitiativeTracker.token[tokenId].initiative = 0;
-		}
-		if (!state.InitiativeTracker.token[tokenId].nextInitiative) {
-			state.InitiativeTracker.token[tokenId].nextInitiative = 0;
-		}
-
+		Tracker.stackTokenSync(tokenId);
 		selectedToken = state.InitiativeTracker.token[tokenId];
-		if (Tracker.INITIATIVE_MOD[alias]) {
-			selectedToken.nextInitiative += Tracker.INITIATIVE_MOD[alias];
-		} else if (Tracker.INITIATIVE_MOD[status]) {
-			selectedToken.nextInitiative += Tracker.INITIATIVE_MOD[status];
-		}
-
-
-
-		if (!state.InitiativeTracker.token[tokenId].statuses) {
-			state.InitiativeTracker.token[tokenId].statuses = [];
-		}
-		log("Adding a status with name: " + status + ", and a duration of: " + duration);
+		selectedToken.nextInitiative += Tracker.getInitModFromAliasOrStatus(status);
 		state.InitiativeTracker.token[tokenId].statuses.push({
-			'expires': duration,
+			'duration': duration,
 			'count': state.InitiativeTracker.count,
-			'status': status,
-			'name': alias
+			'name': status,
+			'alias': alias,
+			'severity': 0
 		});
 		if (duration > 10) {
 			duration = true;
@@ -931,7 +920,7 @@ var Tracker = Tracker || {
 							if ((!state.InitiativeTracker.highToLow) && (selStatus.count > state.InitiativeTracker.count)) {
 								duration += 1;
 							}*/
-							output += index + ": " + tokenNames[id] + ": " + selStatus.name + " " + selStatus.expires + "\n";
+							output += index + ": " + tokenNames[id] + ": " + selStatus.alias + " " + selStatus.duration + "\n";
 						});
 					}
 				});
@@ -959,7 +948,7 @@ var Tracker = Tracker || {
 						}
 						var stackToken = state.InitiativeTracker.token[selected[k]._id];
 						for (var i = 0; i < stackToken.statuses.length; i++) {
-							var status = stackToken.statuses[i].status;
+							var status = stackToken.statuses[i].name;
 							token.set("status_" + status, false);
 							var curAlias = (_.invert(Tracker.STATUS_ALIASES))[status];
 							stackToken.nextInitiative -= Tracker.INITIATIVE_MOD[curAlias];
@@ -990,7 +979,7 @@ var Tracker = Tracker || {
 						continue;
 					}
 					var stackToken = state.InitiativeTracker.token[selected[i]._id];
-					var status = stackToken.statuses[idx].status;
+					var status = stackToken.statuses[idx].name;
 					token.set("status_" + status, false);
 					var curAlias = (_.invert(Tracker.STATUS_ALIASES))[status];
 					stackToken.nextInitiative -= Tracker.INITIATIVE_MOD[curAlias];
