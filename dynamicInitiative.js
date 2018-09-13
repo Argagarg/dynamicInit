@@ -1,7 +1,9 @@
 var Tracker = Tracker || (function () {
 	'use strict';
 
-	const ALL_STATUSES = ["red", "blue", "green", "brown", "purple", "pink", "yellow",
+	const version = '0.1.0',
+
+	ALL_STATUSES = ["red", "blue", "green", "brown", "purple", "pink", "yellow",
 			"dead", "skull", "sleepy", "half-heart", "half-haze", "interdiction", "snail", "lightning-helix", "spanner",
 			"chained-heart", "chemical-bolt", "death-zone", "drink-me", "edge-crack", "ninja-mask", "stopwatch",
 			"fishing-net", "overdrive", "strong", "fist", "padlock", "three-leaves", "fluffy-wing", "pummeled", "tread",
