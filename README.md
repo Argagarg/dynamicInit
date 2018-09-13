@@ -20,7 +20,7 @@ DIST, as a roll20 API script, requires the DM to have access to the API scripts 
 
 ## Contributing
 
-If you'd like to contribute, please message me over on the roll20 forums (https://app.roll20.net/users/58729/argagarg)
+If you'd like to contribute, please message me over on the [roll20 forums](https://app.roll20.net/users/58729/argagarg)
 
 ## Versioning
 
@@ -37,4 +37,4 @@ This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md
 
 ## Acknowledgments
 
-* This script was inspired by (and loosely based on) Manveti's roll20 Initiative Tracker (https://wiki.roll20.net/Script:Initiative_Tracker)
+* This script was inspired by Manveti's roll20 Initiative Tracker (https://wiki.roll20.net/Script:Initiative_Tracker)
