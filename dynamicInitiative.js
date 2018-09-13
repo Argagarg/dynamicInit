@@ -289,6 +289,225 @@ var Tracker = Tracker || (function () {
 			}
 		},
 
+		rebuildTurnOrder = function () {
+			var charid = '';
+			var tokenid = '';
+			var matchingCharacters = {}; //tracks character sheets with the same character name as a token's name
+			var initBonus = 0;
+			var roll = 0;
+			var usedCharArray = []; //tracks the charids that have already been rolled for
+			var turnorder = [];
+			var oldstack = [];
+			var newEntry = {};
+			var rollArray = {};
+			var duplicateInit = false;
+			var page_id = '';
+			var exists = false;
+			var stackToken = {};
+			var adjRollArray = [];
+			var stackTokenInit = 0;
+			var characterName;
+			var currentPageGraphics = findObjs({
+				_pageid: Campaign().get("playerpageid"),
+				_type: "graphic",
+				_subtype: "token",
+			});
+			if (currentPageGraphics.length != 0) {
+				page_id = currentPageGraphics[0].get('pageid');
+			}
+
+			//Set up the Round Start entry if using dynamic initiative
+			if (state.InitiativeTracker['highToLow'] === true) {
+				turnorder.push({
+					id: "-1",
+					pr: 100,
+					custom: "Round Start",
+					_pageid: page_id
+				});
+			} else {
+				turnorder.push({
+					id: "-1",
+					pr: -100,
+					custom: "Round Start",
+					_pageid: page_id
+				});
+			}
+
+			_.each(currentPageGraphics, function (graphic) {
+				tokenid = graphic.get('id');
+				//only check tokens which have bar3 values and--if autoremove is enabled-- are not dead (are character tokens of some kind)
+				if (graphic.get('bar3_value') != '' && (state.InitiativeTracker['autoremovedead'] === false || !graphic.get('statusmarkers').includes('dead'))) {
+					if (state.InitiativeTracker['statusTurn'] === false) {
+						var selStackToken = state.InitiativeTracker.token[tokenid];
+						selStackToken.expiredStatuses = [];
+						_.each(selStackToken.statuses, function (selStatus, index) {
+							selStatus.duration--;
+							if (selStatus.duration <= 0) {
+								graphic.set("status_" + selStatus.name, false);
+								selStackToken.nextInitiative -= getInitModFromAliasOrStatus(Tracker.getAliasOrName(selStatus));
+								announceStatusExpiration(getAliasOrName(selStatus), graphic.get('name'));
+								selStackToken.expiredStatuses.push(selStackToken.statuses.splice(i, 1)[0]);
+							} else if (selStatus.duration < 10) {
+								// status has nine or fewer rounds left; update marker to reflect remaining rounds
+								graphic.set("status_" + selStatus.name, selStatus.duration);
+							}
+						});
+					}
+					exists = false;
+
+					//synchronize the init tracker stucture with the extant tokens
+					stackTokenSync(tokenid);
+					stackToken = state.InitiativeTracker.token[tokenid];
+					stackToken.initiative = stackToken.nextInitiative;
+					stackTokenInit = stackToken.initiative;
+
+					//check to see if the token is linked to a character
+					charid = graphic.get('represents');
+					if (charid != undefined && charid != '') {
+
+						//if the token represents a character we handle it uniquely
+						initBonus = getAttrByName(charid, "AgilityMod", "current");
+
+						//TODO: eventually, we want linked characters to have their initiative modifier reflected in the character sheet
+						roll = randomInteger(10) + parseInt(initBonus);
+					} else {
+
+						//if there's no linked char, see if we can find any characters with the exact same name as the token
+						characterName = graphic.get('name');
+						matchingCharacters = findObjs({
+							_type: "character",
+							name: characterName,
+						});
+						if (matchingCharacters.length == 0) {
+							//generic tokens with no matching character get a generic roll
+							initBonus = 0;
+							roll = randomInteger(10);
+						} else {
+
+							//if there's a matching character but the token isn't directly linked then the character is a mook
+							charid = matchingCharacters[0].get('id');
+							if (state.InitiativeTracker['pooledInit'] === true) {
+								exists = !usedCharArray.every(function (used) {
+									return used !== charid;
+								});
+							}
+							if (exists === false) {
+
+								//handles first instance of a mook
+								initBonus = getAttrByName(charid, "AgilityMod", "current");
+								roll = randomInteger(10) + parseInt(initBonus);
+
+								rollArray[charid] = roll;
+								usedCharArray.push(charid);
+							} else {
+
+								//handles subsequent instances of a mook
+								initBonus = getAttrByName(charid, "AgilityMod", "current");
+								roll = rollArray[charid];
+							}
+						}
+					}
+
+					//add any status-based initiative modifications
+					roll += parseInt(stackTokenInit);
+					if (charid) {
+						duplicateInit = _.some(adjRollArray[charid], function (value) {
+							return value === roll;
+						});
+						if (exists === false) adjRollArray[charid] = [];
+						if (duplicateInit === false) adjRollArray[charid].push(roll);
+					}
+
+					//place in ordered turnorder array IF the character hasn't already been added OR the character is a mook with an adjusted initiative value
+					if (exists === false || (exists === true && duplicateInit === false)) {
+
+						//place the new entry in an ordered position on the stack
+						newEntry = {
+							id: tokenid,
+							pr: roll,
+							custom: graphic.get('name'),
+							_pageid: page_id
+						};
+
+						//remove items from the stack until we encounter a roll entry equal to or less than the top of the stack
+						if (state.InitiativeTracker['highToLow'] === true) {
+							while (newEntry.pr > turnorder[turnorder.length - 1].pr) {
+								oldstack.push(turnorder.pop());
+							}
+
+							//check the tiebreaker if tied or just add it to the stack
+							if (newEntry.pr === turnorder[turnorder.length - 1].pr) {
+								//get the initiative bonuses for the requisite tokens' characters
+								var newTokenInitBonus, oldTokenInitBonus;
+								if (charid) newTokenInitBonus = getAttrByName(charid, "AgilityMod", "current");
+								else newTokenInitBonus = 0;
+								oldTokenInitBonus = getObj("graphic", turnorder[turnorder.length - 1].id).get('represents');
+								if (oldTokenInitBonus) oldTokenInitBonus = getAttrByName(oldTokenInitBonus, "AgilityMod", "current");
+								else {
+									matchingCharacters = findObjs({
+										_type: "character",
+										name: characterName,
+									});
+									if (matchingCharacters.length === 0) oldTokenInitBonus = 0;
+									else oldTokenInitBonus = getAttrByName(matchingCharacters[0].id, "AgilityMod", "current");
+								}
+
+								if (newTokenInitBonus > oldTokenInitBonus) oldstack.push(turnorder.pop());
+								turnorder.push(newEntry);
+							} else if (newEntry.pr < turnorder[turnorder.length - 1].pr) {
+								turnorder.push(newEntry);
+							} else {
+								log("something fucked up");
+							}
+
+							//restore the bottom of the stack
+							while (oldstack.length > 0) {
+								turnorder.push(oldstack.pop());
+							}
+						} else {
+							while (newEntry.pr < turnorder[turnorder.length - 1].pr) {
+								oldstack.push(turnorder.pop());
+							}
+
+							//check the tiebreaker if tied or just add it to the stack
+							if (newEntry.pr === turnorder[turnorder.length - 1].pr) {
+								//get the initiative bonuses for the requisite tokens' characters
+								var newTokenInitBonus, oldTokenInitBonus;
+								if (charid) newTokenInitBonus = getAttrByName(charid, "AgilityMod", "current");
+								else newTokenInitBonus = 0;
+								oldTokenInitBonus = getObj("graphic", turnorder[turnorder.length - 1].id).get('represents');
+								if (oldTokenInitBonus) oldTokenInitBonus = getAttrByName(oldTokenInitBonus, "AgilityMod", "current");
+								else {
+									matchingCharacters = findObjs({
+										_type: "character",
+										name: characterName,
+									});
+									if (matchingCharacters.length === 0) oldTokenInitBonus = 0;
+									else oldTokenInitBonus = getAttrByName(matchingCharacters[0].id, "AgilityMod", "current");
+								}
+
+								if (newTokenInitBonus < oldTokenInitBonus) oldstack.push(turnorder.pop());
+								turnorder.push(newEntry);
+							} else if (newEntry.pr > turnorder[turnorder.length - 1].pr) {
+								turnorder.push(newEntry);
+							} else {
+								log("something fucked up");
+							}
+
+							//restore the bottom of the stack
+							while (oldstack.length > 0) {
+								turnorder.push(oldstack.pop());
+							}
+						}
+					}
+				}
+			});
+
+			//Push turnorder to roll20
+			log("Turn Order Str: " + JSON.stringify(turnorder));
+			Campaign().set("turnorder", JSON.stringify(turnorder));
+		},
+
 		announceRound = function (round) {
 			if (!state.InitiativeTracker.announceRounds) {
 				return;
@@ -319,8 +538,8 @@ var Tracker = Tracker || (function () {
 		handleTurnChange = function (newTurnOrder, oldTurnOrder) {
 			var newTurns = JSON.parse((typeof (newTurnOrder) == typeof ("") ? newTurnOrder : newTurnOrder.get('turnorder') || "[]"));
 			var oldTurns = JSON.parse((typeof (oldTurnOrder) == typeof ("") ? oldTurnOrder : oldTurnOrder.turnorder || "[]"));
-			//log(newTurns);
-			//log(oldTurns);
+			var matchingTokens = [];
+
 			if ((!newTurns) || (!oldTurns)) {
 				return;
 			}
@@ -381,12 +600,18 @@ var Tracker = Tracker || (function () {
 					stackTokenSync(newTurns[newTurns.length - 1].id);
 					var currentStackToken = state.InitiativeTracker.token[newTurns[newTurns.length - 1].id];
 					var characterName = currentToken.get('name');
-					var matchingTokens = findObjs({
-						_pageid: Campaign().get("playerpageid"),
-						_type: "graphic",
-						_subtype: "token",
-						name: characterName
-					});
+					let charid = currentToken.get('represents');
+					if(charid != undefined && charid != ''){
+						matchingTokens.push(currentToken);
+					}else{
+						matchingTokens = findObjs({
+							_pageid: Campaign().get("playerpageid"),
+							_type: "graphic",
+							_subtype: "token",
+							name: characterName
+						});
+					}
+
 
 					//find all tokens that match a given character name
 					_.each(matchingTokens, function (selToken) {
@@ -436,226 +661,11 @@ var Tracker = Tracker || (function () {
 
 			//Dynamic Init hook: find all the tokens on the map and reroll their initiative
 			if (state.InitiativeTracker['dynamicInit'] === true) {
-				var charid = '';
-				var tokenid = '';
-				var matchingCharacters = {}; //tracks character sheets with the same character name as a token's name
-				var initBonus = 0;
-				var roll = 0;
-				var usedCharArray = []; //tracks the charids that have already been rolled for
-				var turnorder = [];
-				var oldstack = [];
-				var newEntry = {};
-				var rollArray = {};
-				var duplicateInit = false;
-				var page_id = '';
-				var exists = false;
-				var stackToken = {};
-				var adjRollArray = [];
-				var stackTokenInit = 0;
-				var characterName;
-				var currentPageGraphics = findObjs({
-					_pageid: Campaign().get("playerpageid"),
-					_type: "graphic",
-					_subtype: "token",
-				});
-				if (currentPageGraphics.length != 0) {
-					page_id = currentPageGraphics[0].get('pageid');
-				}
-
-				//Set up the Round Start entry if using dynamic initiative
-				if (state.InitiativeTracker['highToLow'] === true) {
-					turnorder.push({
-						id: "-1",
-						pr: 100,
-						custom: "Round Start",
-						_pageid: page_id
-					});
-				} else {
-					turnorder.push({
-						id: "-1",
-						pr: -100,
-						custom: "Round Start",
-						_pageid: page_id
-					});
-				}
-
-				_.each(currentPageGraphics, function (graphic) {
-					tokenid = graphic.get('id');
-					//only check tokens which have bar3 values and--if autoremove is enabled-- are not dead (are character tokens of some kind)
-					if (graphic.get('bar3_value') != '' && (state.InitiativeTracker['autoremovedead'] === false || !graphic.get('statusmarkers').includes('dead'))) {
-						if (state.InitiativeTracker['statusTurn'] === false) {
-							var selStackToken = state.InitiativeTracker.token[tokenid];
-							selStackToken.expiredStatuses = [];
-							_.each(selStackToken.statuses, function (selStatus, index) {
-								selStatus.duration--;
-								if (selStatus.duration <= 0) {
-									graphic.set("status_" + selStatus.name, false);
-									selStackToken.nextInitiative -= getInitModFromAliasOrStatus(Tracker.getAliasOrName(selStatus));
-									announceStatusExpiration(getAliasOrName(selStatus), graphic.get('name'));
-									selStackToken.expiredStatuses.push(selStackToken.statuses.splice(i, 1)[0]);
-								} else if (selStatus.duration < 10) {
-									// status has nine or fewer rounds left; update marker to reflect remaining rounds
-									graphic.set("status_" + selStatus.name, selStatus.duration);
-								}
-							});
-						}
-						exists = false;
-
-						//synchronize the init tracker stucture with the extant tokens
-						stackTokenSync(tokenid);
-						stackToken = state.InitiativeTracker.token[tokenid];
-						stackToken.initiative = stackToken.nextInitiative;
-						stackTokenInit = stackToken.initiative;
-
-						//check to see if the token is linked to a character
-						charid = graphic.get('represents');
-						if (charid != undefined && charid != '') {
-
-							//if the token represents a character we handle it uniquely
-							initBonus = getAttrByName(charid, "AgilityMod", "current");
-
-							//TODO: eventually, we want linked characters to have their initiative modifier reflected in the character sheet
-							roll = randomInteger(10) + parseInt(initBonus);
-						} else {
-
-							//if there's no linked char, see if we can find any characters with the exact same name as the token
-							characterName = graphic.get('name');
-							matchingCharacters = findObjs({
-								_type: "character",
-								name: characterName,
-							});
-							if (matchingCharacters.length == 0) {
-								//generic tokens with no matching character get a generic roll
-								initBonus = 0;
-								roll = randomInteger(10);
-							} else {
-
-								//if there's a matching character but the token isn't directly linked then the character is a mook
-								charid = matchingCharacters[0].get('id');
-								if (state.InitiativeTracker['pooledInit'] === true) {
-									exists = !usedCharArray.every(function (used) {
-										return used !== charid;
-									});
-								}
-								if (exists === false) {
-
-									//handles first instance of a mook
-									initBonus = getAttrByName(charid, "AgilityMod", "current");
-									roll = randomInteger(10) + parseInt(initBonus);
-
-									rollArray[charid] = roll;
-									usedCharArray.push(charid);
-								} else {
-
-									//handles subsequent instances of a mook
-									initBonus = getAttrByName(charid, "AgilityMod", "current");
-									roll = rollArray[charid];
-								}
-							}
-						}
-
-						//add any status-based initiative modifications
-						roll += parseInt(stackTokenInit);
-						if (charid) {
-							duplicateInit = _.some(adjRollArray[charid], function (value) {
-								return value === roll;
-							});
-							if (exists === false) adjRollArray[charid] = [];
-							if (duplicateInit === false) adjRollArray[charid].push(roll);
-						}
-
-						//place in ordered turnorder array IF the character hasn't already been added OR the character is a mook with an adjusted initiative value
-						if (exists === false || (exists === true && duplicateInit === false)) {
-
-							//place the new entry in an ordered position on the stack
-							newEntry = {
-								id: tokenid,
-								pr: roll,
-								custom: graphic.get('name'),
-								_pageid: page_id
-							};
-
-							//remove items from the stack until we encounter a roll entry equal to or less than the top of the stack
-							if (state.InitiativeTracker['highToLow'] === true) {
-								while (newEntry.pr > turnorder[turnorder.length - 1].pr) {
-									oldstack.push(turnorder.pop());
-								}
-
-								//check the tiebreaker if tied or just add it to the stack
-								if (newEntry.pr === turnorder[turnorder.length - 1].pr) {
-									//get the initiative bonuses for the requisite tokens' characters
-									var newTokenInitBonus, oldTokenInitBonus;
-									if (charid) newTokenInitBonus = getAttrByName(charid, "AgilityMod", "current");
-									else newTokenInitBonus = 0;
-									oldTokenInitBonus = getObj("graphic", turnorder[turnorder.length - 1].id).get('represents');
-									if (oldTokenInitBonus) oldTokenInitBonus = getAttrByName(oldTokenInitBonus, "AgilityMod", "current");
-									else {
-										matchingCharacters = findObjs({
-											_type: "character",
-											name: characterName,
-										});
-										if (matchingCharacters.length === 0) oldTokenInitBonus = 0;
-										else oldTokenInitBonus = getAttrByName(matchingCharacters[0].id, "AgilityMod", "current");
-									}
-
-									if (newTokenInitBonus > oldTokenInitBonus) oldstack.push(turnorder.pop());
-									turnorder.push(newEntry);
-								} else if (newEntry.pr < turnorder[turnorder.length - 1].pr) {
-									turnorder.push(newEntry);
-								} else {
-									log("something fucked up");
-								}
-
-								//restore the bottom of the stack
-								while (oldstack.length > 0) {
-									turnorder.push(oldstack.pop());
-								}
-							} else {
-								while (newEntry.pr < turnorder[turnorder.length - 1].pr) {
-									oldstack.push(turnorder.pop());
-								}
-
-								//check the tiebreaker if tied or just add it to the stack
-								if (newEntry.pr === turnorder[turnorder.length - 1].pr) {
-									//get the initiative bonuses for the requisite tokens' characters
-									var newTokenInitBonus, oldTokenInitBonus;
-									if (charid) newTokenInitBonus = getAttrByName(charid, "AgilityMod", "current");
-									else newTokenInitBonus = 0;
-									oldTokenInitBonus = getObj("graphic", turnorder[turnorder.length - 1].id).get('represents');
-									if (oldTokenInitBonus) oldTokenInitBonus = getAttrByName(oldTokenInitBonus, "AgilityMod", "current");
-									else {
-										matchingCharacters = findObjs({
-											_type: "character",
-											name: characterName,
-										});
-										if (matchingCharacters.length === 0) oldTokenInitBonus = 0;
-										else oldTokenInitBonus = getAttrByName(matchingCharacters[0].id, "AgilityMod", "current");
-									}
-
-									if (newTokenInitBonus < oldTokenInitBonus) oldstack.push(turnorder.pop());
-									turnorder.push(newEntry);
-								} else if (newEntry.pr > turnorder[turnorder.length - 1].pr) {
-									turnorder.push(newEntry);
-								} else {
-									log("something fucked up");
-								}
-
-								//restore the bottom of the stack
-								while (oldstack.length > 0) {
-									turnorder.push(oldstack.pop());
-								}
-							}
-						}
-					}
-				});
-
-				//Push turnorder to roll20
-				log("Turn Order Str: " + JSON.stringify(turnorder));
-				Campaign().set("turnorder", JSON.stringify(turnorder));
+				rebuildTurnOrder();
 			}
 
 			if (state.InitiativeTracker['statusTurn'] === false) {
-				//update all token statuses
+				//TODO: update all token statuses
 			}
 		},
 
@@ -723,7 +733,7 @@ var Tracker = Tracker || (function () {
 					log("backend synced with tabletop");
 					break;
 				case "back":
-					try{
+					try {
 						//TODO: Better error handling & turn/round announcements
 						var oldTurnOrderStr = Campaign().get('turnorder') || "[]";
 						var turnOrder = JSON.parse(oldTurnOrderStr);
@@ -797,7 +807,7 @@ var Tracker = Tracker || (function () {
 								Campaign().set('turnorder', newTurnOrderStr);
 							}
 						}
-					} catch(e){
+					} catch (e) {
 						write("Error: No previous round data is stored", who, "", "Tracker");
 					}
 					break;
@@ -815,7 +825,7 @@ var Tracker = Tracker || (function () {
 
 						_.each(currentPageGraphics, function (selToken) {
 							if (selToken.get('bar3_value') != '') {
-								selToken.set("statusmarkers",'');
+								selToken.set("statusmarkers", '');
 							}
 						});
 						dataSync();
@@ -829,6 +839,7 @@ var Tracker = Tracker || (function () {
 						Campaign().set('turnorder', JSON.stringify(turnOrder));
 						state.InitiativeTracker.round = 1;
 						state.InitiativeTracker.count = turnOrder[0].pr;
+						rebuildTurnOrder();
 						announceRound(state.InitiativeTracker.round);
 						announceTurn(turnOrder[0].pr, turnOrder[0].custom, turnOrder[0].id);
 					}
@@ -889,6 +900,7 @@ var Tracker = Tracker || (function () {
 		addStatus = function (tokenId, status, duration, description) {
 			let alias, selectedToken;
 			let token = getObj("graphic", tokenId);
+			let matchingTokens = [];
 			if (!token) {
 				log("didn't find a token");
 				return;
@@ -915,7 +927,29 @@ var Tracker = Tracker || (function () {
 				status = '';
 			}
 
-			//log("status:" + status + ", alias:" + alias);
+			//if updating statuses after every turn, check current turn order and +1 for current turn token
+			//TODO: make sure this works for generic tokens
+			if (state.InitiativeTracker['statusTurn'] === true) {
+				var oldTurnOrderStr = Campaign().get('turnorder') || "[]";
+				var turnOrder = JSON.parse(oldTurnOrderStr);
+				var currentTurnToken = getObj("graphic", turnOrder[0].id);
+				if(currentTurnToken){
+					var characterName = currentTurnToken.get('name');
+					let charid = currentTurnToken.get('represents');
+					if(charid != undefined && charid != ''){
+						matchingTokens.push(currentTurnToken);
+					}else{
+						matchingTokens = findObjs({
+							_pageid: Campaign().get("playerpageid"),
+							_type: "graphic",
+							_subtype: "token",
+							name: characterName
+						});
+					}
+					let curTurn = _.find(matchingTokens, function(checkid){ return checkid.id ===tokenId; });
+					if(curTurn) duration++;
+				}
+			}
 
 			//sync stack with extant tokens
 			stackTokenSync(tokenId);
@@ -1044,8 +1078,8 @@ var Tracker = Tracker || (function () {
 								stackToken.statuses.splice(i, 1);
 								i -= 1;
 								let alias = (_.invert(STATUS_ALIASES))[status];
-								if(!alias) 	announceStatusExpiration(status, token.get('name'));
-								else 		announceStatusExpiration(alias, token.get('name'));
+								if (!alias) announceStatusExpiration(status, token.get('name'));
+								else announceStatusExpiration(alias, token.get('name'));
 							}
 						}
 						break;
@@ -1056,16 +1090,16 @@ var Tracker = Tracker || (function () {
 						break;
 					}
 					var idx = args[0];
-					if(isNaN(idx)){
+					if (isNaN(idx)) {
 						//Treats the given id as an alias or status and tries to remove those
-						
+
 						let name;
 						if (STATUS_ALIASES[idx]) {
-							name=STATUS_ALIASES[idx];
-						} else if(ALL_STATUSES[idx]){
-							name=idx;
-						}else {
-							write("Error: " + args[0]+" isn't a status or alias", who, "", "Tracker");
+							name = STATUS_ALIASES[idx];
+						} else if (ALL_STATUSES[idx]) {
+							name = idx;
+						} else {
+							write("Error: " + args[0] + " isn't a status or alias", who, "", "Tracker");
 							break;
 						}
 						for (let i = 0; i < selected.length; i++) {
@@ -1077,8 +1111,8 @@ var Tracker = Tracker || (function () {
 								continue;
 							}
 							let stackToken = state.InitiativeTracker.token[selected[i]._id];
-							for(let j = 0; j < stackToken.statuses.length; j++){
-								if(stackToken.statuses[j].name !== name) continue;
+							for (let j = 0; j < stackToken.statuses.length; j++) {
+								if (stackToken.statuses[j].name !== name) continue;
 								token.set("status_" + name, false);
 								stackToken.nextInitiative -= getInitModFromAliasOrStatus(idx);
 								stackToken.statuses.splice(j, 1);
@@ -1086,7 +1120,7 @@ var Tracker = Tracker || (function () {
 								announceStatusExpiration(idx, token.get('name'));
 							}
 						}
-					}else{
+					} else {
 						//treats the given id as a numbered entry in the status list
 						if (idx < 0) {
 							write("Error: Invalid status effect ID: " + args[0], who, "", "Tracker");
@@ -1110,8 +1144,8 @@ var Tracker = Tracker || (function () {
 							stackToken.nextInitiative -= getInitModFromAliasOrStatus(status);
 							stackToken.statuses.splice(idx, 1);
 							let alias = (_.invert(STATUS_ALIASES))[status];
-							if(!alias) 	announceStatusExpiration(status, token.get('name'));
-							else 		announceStatusExpiration(alias, token.get('name'));	
+							if (!alias) announceStatusExpiration(status, token.get('name'));
+							else announceStatusExpiration(alias, token.get('name'));
 						}
 					}
 					break;
